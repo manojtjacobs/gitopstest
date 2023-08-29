@@ -3,4 +3,3 @@ kind: Kustomization
 resources:
   - release.yaml
   - namespace.yaml
-  - namespace01.yaml
