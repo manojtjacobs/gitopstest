@@ -17,7 +17,7 @@ spec:
   interval: 1h0m0s
   install:
     remediation:
-      retries: 2
+      retries: 3
   valuesFrom:
     - kind: ConfigMap
       name: redis-values
