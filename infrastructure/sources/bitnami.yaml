@@ -3,5 +3,5 @@ kind: HelmRepository
 metadata:
   name: bitnami
 spec:
-  interval: 20m
+  interval: 30m
   url: https://charts.bitnami.com/bitnami
