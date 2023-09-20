@@ -39,5 +39,5 @@ jobs:
           echo Add other actions to build,
           echo ${{ env.hello02 }}
           ls -l
-          value01=($(cat .version.json | jq -r '.test01')) 
+          value01=($(cat ./version.json | jq -r '.test01')) 
           echo $value01
