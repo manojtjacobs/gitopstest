@@ -1,560 +1,200 @@
-# gitops-flux2-kustomize-helm-mt
-
-[![test](https://github.com/fluxcd/flux2-kustomize-helm-example/workflows/test/badge.svg)](https://github.com/fluxcd/flux2-kustomize-helm-example/actions)
-[![e2e](https://github.com/fluxcd/flux2-kustomize-helm-example/workflows/e2e/badge.svg)](https://github.com/fluxcd/flux2-kustomize-helm-example/actions)
-[![license](https://img.shields.io/github/license/fluxcd/flux2-kustomize-helm-example.svg)](https://github.com/fluxcd/flux2-kustomize-helm-example/blob/main/LICENSE)
-
-This repo is a clone of the [fluxcd example repo](https://github.com/fluxcd/flux2-kustomize-helm-example) that has been updated to work with multi-tenancy. Azure GitOps enables Flux multi-tenancy by default, thus this example repo can be used for simple proof of concept following [this tutorial](https://docs.microsoft.com/azure/azure-arc/kubernetes/tutorial-use-gitops-flux2).
-
-### Breaking Change Disclaimer ⚠️
-
-This repo is a tutorial repository and does not come with any guarantees pertaining to breaking changes. Version upgrades may be performed to this repository that may cause breaks on upgrades. In cases where installation of helm charts or Kubernetes manifests upgrades fail, you may have to manually purge the releases from the cluster and allow the HelmRelease to re-reconcile the fresh install of the chart.
-
-```bash
-helm delete -n <namespace> <helm-chart-name>
-flux reconcile helmrelease -n <helmrelease-namespace> <helmrelease-name>
-```
-
-Optionally, you may also re-create the fluxConfiguration to re-deploy all of the deployed manifests from start.
-
-```bash
-az k8s-configuration flux delete -g flux-demo-rg -c flux-demo-arc -n cluster-config --namespace cluster-config -t connectedClusters
-
-az k8s-configuration flux create -g flux-demo-rg -c flux-demo-arc -n cluster-config --namespace cluster-config -t connectedClusters --scope cluster -u https://github.com/Azure/gitops-flux2-kustomize-helm-mt --branch main  --kustomization name=infra path=./infrastructure prune=true --kustomization name=apps path=./apps/staging prune=true dependsOn=["infra"]
-```
-
-### Redhat Openshift Setup
-
-[Redhat Openshift](https://www.redhat.com/en/technologies/cloud-computing/openshift) clusters impose [security context constraints](https://docs.openshift.com/container-platform/4.6/authentication/managing-security-context-constraints.html) on all containers that run on the Kubernetes cluster. For all containers in the example application to run, you will need to add the following SCCs to your cluster
-
-```bash
-oc adm policy add-scc-to-user privileged system:serviceaccount:nginx:nginx-nginx-nginx-ingress-controller
-oc adm policy add-scc-to-user nonroot system:serviceaccount:redis:default
-```
-
-## Original README
-
-For this example we assume a scenario with two clusters: staging and production.
-The end goal is to leverage Flux and Kustomize to manage both clusters while minimizing duplicated declarations.
-
-We will configure Flux to install, test and upgrade a demo app using
-`HelmRepository` and `HelmRelease` custom resources.
-Flux will monitor the Helm repository, and it will automatically
-upgrade the Helm releases to their latest chart version based on semver ranges.
-
-## Prerequisites
-
-You will need a Kubernetes cluster version 1.16 or newer and kubectl version 1.18.
-For a quick local test, you can use [Kubernetes kind](https://kind.sigs.k8s.io/docs/user/quick-start/).
-Any other Kubernetes setup will work as well though.
-
-In order to follow the guide you'll need a GitHub account and a
-[personal access token](https://help.github.com/en/github/authenticating-to-github/creating-a-personal-access-token-for-the-command-line)
-that can create repositories (check all permissions under `repo`).
-
-Install the Flux CLI on MacOS and Linux using Homebrew:
-
-```sh
-brew install fluxcd/tap/flux
-```
-
-Or install the CLI by downloading precompiled binaries using a Bash script:
-
-```sh
-curl -s https://fluxcd.io/install.sh | sudo bash
-```
-
-## Repository structure
-
-The Git repository contains the following top directories:
-
-- **apps** dir contains Helm releases with a custom configuration per cluster
-- **infrastructure** dir contains common infra tools such as NGINX ingress controller and Helm repository definitions
-- **clusters** dir contains the Flux configuration per cluster
-
-```
-├── apps
-│   ├── base
-│   ├── production 
-│   └── staging
-├── infrastructure
-│   ├── nginx
-│   ├── redis
-│   └── sources
-└── clusters
-    ├── production
-    └── staging
-```
-
-The apps configuration is structured into:
-
-- **apps/base/** dir contains namespaces and Helm release definitions
-- **apps/production/** dir contains the production Helm release values
-- **apps/staging/** dir contains the staging values
-
-```
-./apps/
-├── base
-│   └── podinfo
-│       ├── kustomization.yaml
-│       ├── namespace.yaml
-│       └── release.yaml
-├── production
-│   ├── kustomization.yaml
-│   └── podinfo-patch.yaml
-└── staging
-    ├── kustomization.yaml
-    └── podinfo-patch.yaml
-```
-
-In **apps/base/podinfo/** dir we have a HelmRelease with common values for both clusters:
-
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: podinfo
-  namespace: podinfo
-spec:
-  releaseName: podinfo
-  chart:
-    spec:
-      chart: podinfo
-      sourceRef:
-        kind: HelmRepository
-        name: podinfo
-        namespace: flux-system
-  interval: 5m
-  values:
-    cache: redis-master.redis:6379
-    ingress:
-      enabled: true
-      annotations:
-        kubernetes.io/ingress.class: nginx
-```
-
-In **apps/staging/** dir we have a Kustomize patch with the staging specific values:
-
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: podinfo
-spec:
-  chart:
-    spec:
-      version: ">=1.0.0-alpha"
-  test:
-    enable: true
-  values:
-    ingress:
-      hosts:
-        - host: podinfo.staging
-```
-
-Note that with ` version: ">=1.0.0-alpha"` we configure Flux to automatically upgrade
-the `HelmRelease` to the latest chart version including alpha, beta and pre-releases.
-
-In **apps/production/** dir we have a Kustomize patch with the production specific values:
-
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: podinfo
-  namespace: podinfo
-spec:
-  chart:
-    spec:
-      version: ">=1.0.0"
-  values:
-    ingress:
-      hosts:
-        - host: podinfo.production
-```
-
-Note that with ` version: ">=1.0.0"` we configure Flux to automatically upgrade
-the `HelmRelease` to the latest stable chart version (alpha, beta and pre-releases will be ignored).
-
-Infrastructure:
-
-```
-./infrastructure/
-├── nginx
-│   ├── kustomization.yaml
-│   ├── namespace.yaml
-│   └── release.yaml
-├── redis
-│   ├── kustomization.yaml
-│   ├── namespace.yaml
-│   └── release.yaml
-└── sources
-    ├── bitnami.yaml
-    ├── kustomization.yaml
-    └── podinfo.yaml
-```
-
-In **infrastructure/sources/** dir we have the Helm repositories definitions:
-
-```yaml
-apiVersion: source.toolkit.fluxcd.io/v1beta1
-kind: HelmRepository
-metadata:
-  name: podinfo
-spec:
-  interval: 5m
-  url: https://stefanprodan.github.io/podinfo
 ---
-apiVersion: source.toolkit.fluxcd.io/v1beta1
-kind: HelmRepository
-metadata:
-  name: bitnami
-spec:
-  interval: 30m
-  url: https://charts.bitnami.com/bitnami
-```
-
-Note that with ` interval: 5m` we configure Flux to pull the Helm repository index every five minutes.
-If the index contains a new chart version that matches a `HelmRelease` semver range, Flux will upgrade the release.
-
-## Bootstrap staging and production
-
-The clusters dir contains the Flux configuration:
-
-```
-./clusters/
-├── production
-│   ├── apps.yaml
-│   └── infrastructure.yaml
-└── staging
-    ├── apps.yaml
-    └── infrastructure.yaml
-```
-
-In **clusters/staging/** dir we have the Kustomization definitions:
-
-```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
-kind: Kustomization
-metadata:
-  name: apps
-  namespace: flux-system
-spec:
-  interval: 10m0s
-  dependsOn:
-    - name: infrastructure
-  sourceRef:
-    kind: GitRepository
-    name: flux-system
-  path: ./apps/staging
-  prune: true
-  wait: true
+page_type: sample
+languages:
+- azdeveloper
+- go
+- javascript
+- rust
+- nodejs
+- python
+- bicep
+- terraform
+- dockerfile
+products:
+- azure
+- azure-kubernetes-service
+- azure-openai
+- azure-cosmos-db
+- azure-container-registry
+- azure-service-bus
+- azure-monitor
+- azure-log-analytics
+- azure-managed-grafana
+- azure-key-vault
+urlFragment: aks-store-demo
+name: AKS Store Demo
+description: This sample demo app consists of a group of containerized microservices that can be easily deployed into an Azure Kubernetes Service (AKS) cluster. 
 ---
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
-kind: Kustomization
-metadata:
-  name: infrastructure
-  namespace: flux-system
-spec:
-  interval: 10m0s
-  sourceRef:
-    kind: GitRepository
-    name: flux-system
-  path: ./infrastructure
-  prune: true
+<!-- YAML front-matter schema: https://review.learn.microsoft.com/en-us/help/contribute/samples/process/onboarding?branch=main#supported-metadata-fields-for-readmemd -->
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://github.com/codespaces/new?hide_repo_select=true&ref=main&repo=648726487)
+
+# AKS Store Demo
+
+This sample demo app consists of a group of containerized microservices that can be easily deployed into an Azure Kubernetes Service (AKS) cluster. This is meant to show a realistic scenario using a polyglot architecture, event-driven design, and common open source back-end services (eg - RabbitMQ, MongoDB). The application also leverages OpenAI's GPT-3 models to generate product descriptions. This can be done using either [Azure OpenAI](https://learn.microsoft.com/azure/ai-services/openai/overview) or [OpenAI](https://openai.com/).
+
+This application is inspired by another demo app called [Red Dog](https://github.com/Azure/reddog-code).
+
+> [!NOTE]
+> This is not meant to be an example of perfect code to be used in production, but more about showing a realistic application running in AKS. 
+
+<!-- 
+To walk through a quick deployment of this application, see the [AKS Quickstart](https://learn.microsoft.com/azure/aks/learn/quick-kubernetes-deploy-cli).
+
+To walk through a complete experience where this code is packaged into container images, uploaded to Azure Container Registry, and then run in and AKS cluster, see the [AKS Tutorials](https://learn.microsoft.com/azure/aks/tutorial-kubernetes-prepare-app).
+
+ -->
+
+## Architecture
+
+The application has the following services: 
+
+| Service | Description |
+| --- | --- |
+| `makeline-service` | This service handles processing orders from the queue and completing them (Golang) |
+| `order-service` | This service is used for placing orders (Javascript) |
+| `product-service` | This service is used to perform CRUD operations on products (Rust) |
+| `store-front` | Web app for customers to place orders (Vue.js) |
+| `store-admin` | Web app used by store employees to view orders in queue and manage products (Vue.js) | 
+| `virtual-customer` | Simulates order creation on a scheduled basis (Rust) |
+| `virtual-worker` | Simulates order completion on a scheduled basis (Rust) |
+| `ai-service` | Optional service for adding generative text and graphics creation (Python) |
+| `mongodb` | MongoDB instance for persisted data |
+| `rabbitmq` | RabbitMQ for an order queue |
+
+![Logical Application Architecture Diagram](assets/demo-arch-with-openai.png)
+
+## Run the app on Azure Kubernetes Service (AKS)
+
+To learn how to deploy this app on AKS, see [Quickstart: Deploy an Azure Kubernetes Service (AKS) cluster using Azure CLI](https://learn.microsoft.com/azure/aks/learn/quick-kubernetes-deploy-cli).
+
+> [!NOTE]
+> The above article shows a simplified version of the store app with some services removed. For the full application, you can use the `aks-store-all-in-one.yaml` file in this repo.
+
+## Run on any Kubernetes
+
+This application uses public images stored in GitHub Container Registry and Microsoft Container Registry (MCR). Once your Kubernetes cluster of choice is setup, you can deploy the full app with the below commands.
+
+This deployment deploys everything except the `ai-service` that integrates OpenAI. If you want to try integrating the OpenAI component, take a look at this article: [Deploy an application that uses OpenAI on Azure Kubernetes Service (AKS)](https://learn.microsoft.com/azure/aks/open-ai-quickstart?tabs=aoai).
+
+```bash
+kubectl create ns pets
+
+kubectl apply -f https://raw.githubusercontent.com/Azure-Samples/aks-store-demo/main/aks-store-all-in-one.yaml -n pets
+
 ```
 
-Note that with `path: ./apps/staging` we configure Flux to sync the staging Kustomize overlay and 
-with `dependsOn` we tell Flux to create the infrastructure items before deploying the apps.
+## Run the app locally
 
-Fork this repository on your personal GitHub account and export your GitHub access token, username and repo name:
+The application is designed to be [run in an AKS cluster](#run-the-app-on-aks), but can also be run locally using Docker Compose.
 
-```sh
-export GITHUB_TOKEN=<your-token>
-export GITHUB_USER=<your-username>
-export GITHUB_REPO=<repository-name>
-```
+> [!TIP]
+> You must have [Docker Desktop](https://www.docker.com/products/docker-desktop) installed to run this app locally. If you do not have it installed locally, you can try opening this repo in a [GitHub Codespace instead](#run-the-app-with-github-codespaces)
 
-Verify that your staging cluster satisfies the prerequisites with:
+To run this app locally:
 
-```sh
-flux check --pre
-```
-
-Set the kubectl context to your staging cluster and bootstrap Flux:
-
-```sh
-flux bootstrap github \
-    --context=staging \
-    --owner=${GITHUB_USER} \
-    --repository=${GITHUB_REPO} \
-    --branch=main \
-    --personal \
-    --path=clusters/staging
-```
-
-The bootstrap command commits the manifests for the Flux components in `clusters/staging/flux-system` dir
-and creates a deploy key with read-only access on GitHub, so it can pull changes inside the cluster.
-
-Watch for the Helm releases being install on staging:
+Clone the repo to your development computer and navigate to the directory:
 
 ```console
-$ watch flux get helmreleases --all-namespaces 
-NAMESPACE	NAME   	REVISION	SUSPENDED	READY	MESSAGE                          
-nginx    	nginx  	5.6.14  	False    	True 	release reconciliation succeeded	
-podinfo  	podinfo	5.0.3   	False    	True 	release reconciliation succeeded	
-redis    	redis  	11.3.4  	False    	True 	release reconciliation succeeded
+git clone https://github.com/Azure-Samples/aks-store-demo.git
+cd aks-store-demo
 ```
 
-Verify that the demo app can be accessed via ingress:
-
-```console
-$ kubectl -n nginx port-forward svc/nginx-ingress-controller 8080:80 &
-
-$ curl -H "Host: podinfo.staging" http://localhost:8080
-{
-  "hostname": "podinfo-59489db7b5-lmwpn",
-  "version": "5.0.3"
-}
-```
-
-Bootstrap Flux on production by setting the context and path to your production cluster:
-
-```sh
-flux bootstrap github \
-    --context=production \
-    --owner=${GITHUB_USER} \
-    --repository=${GITHUB_REPO} \
-    --branch=main \
-    --personal \
-    --path=clusters/production
-```
-
-Watch the production reconciliation:
-
-```console
-$ flux get kustomizations --watch
-NAME          	REVISION                                        READY
-apps          	main/797cd90cc8e81feb30cfe471a5186b86daf2758d	True
-flux-system   	main/797cd90cc8e81feb30cfe471a5186b86daf2758d	True
-infrastructure	main/797cd90cc8e81feb30cfe471a5186b86daf2758d	True
-```
-
-## Encrypt Kubernetes secrets
-
-In order to store secrets safely in a Git repository,
-you can use Mozilla's SOPS CLI to encrypt Kubernetes secrets with OpenPGP or KMS.
-
-Install [gnupg](https://www.gnupg.org/) and [sops](https://github.com/mozilla/sops):
-
-```sh
-brew install gnupg sops
-```
-
-Generate a GPG key for Flux without specifying a passphrase and retrieve the GPG key ID:
-
-```console
-$ gpg --full-generate-key
-Email address: fluxcdbot@users.noreply.github.com
-
-$ gpg --list-secret-keys fluxcdbot@users.noreply.github.com
-sec   rsa3072 2020-09-06 [SC]
-      1F3D1CED2F865F5E59CA564553241F147E7C5FA4
-```
-
-Create a Kubernetes secret on your clusters with the private key:
-
-```sh
-gpg --export-secret-keys \
---armor 1F3D1CED2F865F5E59CA564553241F147E7C5FA4 |
-kubectl create secret generic sops-gpg \
---namespace=flux-system \
---from-file=sops.asc=/dev/stdin
-```
-
-Generate a Kubernetes secret manifest and encrypt the secret's data field with sops:
-
-```sh
-kubectl -n redis create secret generic redis-auth \
---from-literal=password=change-me \
---dry-run=client \
--o yaml > infrastructure/redis/redis-auth.yaml
-
-sops --encrypt \
---pgp=1F3D1CED2F865F5E59CA564553241F147E7C5FA4 \
---encrypted-regex '^(data|stringData)$' \
---in-place infrastructure/redis/redis-auth.yaml
-```
-
-Add the secret to `infrastructure/redis/kustomization.yaml`:
+Configure your Azure OpenAI or OpenAI API keys in [`docker-compose.yml`](./docker-compose.yml) using the environment variables in the `ai-service` section:
 
 ```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: redis
-resources:
-  - namespace.yaml
-  - release.yaml
-  - redis-auth.yaml
+  ai-service:
+    build: src/ai-service
+    container_name: 'ai-service'
+    ...
+    environment:
+      - USE_AZURE_OPENAI=True # set to False if you are not using Azure OpenAI
+      - AZURE_OPENAI_DEPLOYMENT_NAME= # required if using Azure OpenAI
+      - AZURE_OPENAI_ENDPOINT= # required if using Azure OpenAI
+      - OPENAI_API_KEY= # always required
+      - OPENAI_ORG_ID= # required if using OpenAI
+    ...
 ```
 
-Enable decryption on your clusters by editing the `infrastructure.yaml` files:
+Alternatively, if you do not have access to Azure OpenAI or OpenAI API keys, you can run the app without the `ai-service` by commenting out the `ai-service` section in [`docker-compose.yml`](./docker-compose.yml). For example:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
-kind: Kustomization
-metadata:
-  name: infrastructure
-  namespace: flux-system
-spec:
-  # content omitted for brevity
-  decryption:
-    provider: sops
-    secretRef:
-      name: sops-gpg
+#  ai-service:
+#    build: src/ai-service
+#    container_name: 'ai-service'
+...
+#    networks:
+#      - backend_services
 ```
 
-Export the public key so anyone with access to the repository can encrypt secrets but not decrypt them:
+Start the app using `docker compose`. For example:
 
-```sh
-gpg --export -a fluxcdbot@users.noreply.github.com > public.key
+```bash
+docker compose up
 ```
 
-Push the changes to the main branch:
+To stop the app, you can hit the `CTRL+C` key combination in the terminal window where the app is running.
 
-```sh
-git add -A && git commit -m "add encrypted secret" && git push
+## Run the app with GitHub Codespaces
+
+This repo also includes [DevContainer configuration](./.devcontainer/devcontainer.json), so you can open the repo using [GitHub Codespaces](https://docs.github.com/en/codespaces/overview). This will allow you to run the app in a container in the cloud, without having to install Docker on your local machine. When the Codespace is created, you can run the app using the same instructions as above.
+
+## Run the app with Azure Service Bus and Azure Cosmos DB using Azure Developer CLI
+
+This repo also includes an alternate deployment type that uses Azure Service Bus and Azure Cosmos DB instead of RabbitMQ and MongoDB. To deploy this version of the app, you can use the [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/overview) with a GitHub Codespace or DevContainer which has all the tools (e.g., `azure-cli`, `azd`, `terraform`, `kubectl`, and `helm`) pre-installed. This deployment will use Terraform to provision the Azure resources then retrieve output variables and pass them to Helm to deploy the app.
+
+To get started, authenticate to Azure using the Azure Developer CLI and Azure CLI.
+
+```bash
+# authenticate to Azure Developer CLI
+azd auth login
+
+# authenticate to Azure CLI
+az login
 ```
 
-Verify that the secret has been created in the `redis` namespace on both clusters:
+> Note: This project is configured to be deployed with Terraform by default. If you want to deploy using the bicep template, please rename the `azure-bicep.yaml` file to `azure.yaml`.
 
-```sh
-kubectl --context staging -n redis get secrets
-kubectl --context production -n redis get secrets
+Deploy the app with a single command.
+> [!WARNING]
+> Before you run the `azd up` command, make sure that you have the "Owner" role on the subscription you are deploying to. This is because the Terraform templates will create Azure role based access control (RBAC) assignments. Otherwise, the deployment will fail.
+
+The `makeline-service` supports both MongoDB and SQL API for accessing data in Azure CosmosDB. The default API is `MongoDB`, but you can use SQL API. To use the SQL API for Azure CosmosDB, you must provision the service using the `GlobalDocumentDB` account kind. You can set the Azure CosmosDB account kind by running the following command prior to running `azd up`:
+
+```bash
+azd env set AZURE_COSMOSDB_ACCOUNT_KIND GlobalDocumentDB
 ```
 
-You can use Kubernetes secrets to provide values for your Helm releases:
+By default, all application containers will be sourced from the [GitHub Container Registry](https://github.com/orgs/Azure-Samples/packages?repo_name=aks-store-demo). If you want to deploy apps from an Azure Container registry instead, you can do so by setting the following environment variable.
 
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: redis
-spec:
-  # content omitted for brevity
-  values:
-    usePassword: true
-  valuesFrom:
-  - kind: Secret
-    name: redis-auth
-    valuesKey: password
-    targetPath: password
+```bash
+azd env set DEPLOY_AZURE_CONTAINER_REGISTRY true
 ```
 
-Find out more about Helm releases values overrides in the
-[docs](https://toolkit.fluxcd.io/components/helm/helmreleases/#values-overrides).
+This will instruct the Terraform templates to provision an Azure Container Registry and enable authentication from the AKS cluster.
 
+When you choose to deploy containers from Azure Container Registry, you will have the option to import containers from GitHub Container Registry using the `az acr import` command or build containers from source using the `az acr build` command. 
 
-## Add clusters
+To build containers from source, run the following command. 
 
-If you want to add a cluster to your fleet, first clone your repo locally:
-
-```sh
-git clone https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git
-cd ${GITHUB_REPO}
+```bash
+azd env set BUILD_CONTAINERS true
 ```
 
-Create a dir inside `clusters` with your cluster name:
+Provision and deploy the app with a single command.
 
-```sh
-mkdir -p clusters/dev
+```bash
+azd up
 ```
+> [!WARNING]
+> When selecting an Azure region, make sure to choose one that supports all the services used in this app including Azure OpenAI, Azure Kubernetes Service, Azure Service Bus, Azure Cosmos DB, Azure Log Analytics Workspace, Azure Monitor workspace, and Azure Managed Grafana.
 
-Copy the sync manifests from staging:
+Once the deployment is complete, you can verify all the services are running and the app is working by following these steps:
 
-```sh
-cp clusters/staging/infrastructure.yaml clusters/dev
-cp clusters/staging/apps.yaml clusters/dev
-```
+- In the Azure portal, navigate to your Azure Service Bus resource and use Azure Service Bus explorer to check for order messages
+- In the Azure portal, navigate to your Azure Cosmos DB resource and use the database explorer to check for order records
 
-You could create a dev overlay inside `apps`, make sure
-to change the `spec.path` inside `clusters/dev/apps.yaml` to `path: ./apps/dev`. 
+## Additional Resources
 
-Push the changes to the main branch:
-
-```sh
-git add -A && git commit -m "add dev cluster" && git push
-```
-
-Set the kubectl context and path to your dev cluster and bootstrap Flux:
-
-```sh
-flux bootstrap github \
-    --context=dev \
-    --owner=${GITHUB_USER} \
-    --repository=${GITHUB_REPO} \
-    --branch=main \
-    --personal \
-    --path=clusters/dev
-```
-
-## Identical environments
-
-If you want to spin up an identical environment, you can bootstrap a cluster
-e.g. `production-clone` and reuse the `production` definitions.
-
-Bootstrap the `production-clone` cluster:
-
-```sh
-flux bootstrap github \
-    --context=production-clone \
-    --owner=${GITHUB_USER} \
-    --repository=${GITHUB_REPO} \
-    --branch=main \
-    --personal \
-    --path=clusters/production-clone
-```
-
-Pull the changes locally:
-
-```sh
-git pull origin main
-```
-
-Create a `kustomization.yaml` inside the `clusters/production-clone` dir:
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - flux-system
-  - ../production/infrastructure.yaml
-  - ../production/apps.yaml
-```
-
-Note that besides the `flux-system` kustomize overlay, we also include
-the `infrastructure` and `apps` manifests from the production dir.
-
-Push the changes to the main branch:
-
-```sh
-git add -A && git commit -m "add production clone" && git push
-```
-
-Tell Flux to deploy the production workloads on the `production-clone` cluster:
-
-```sh
-flux reconcile kustomization flux-system \
-    --context=production-clone \
-    --with-source 
-```
-
-## Testing
-
-Any change to the Kubernetes manifests or to the repository structure should be validated in CI before
-a pull requests is merged into the main branch and synced on the cluster.
-
-This repository contains the following GitHub CI workflows:
-
-* the [test](./.github/workflows/test.yaml) workflow validates the Kubernetes manifests and Kustomize overlays with [kubeconform](https://github.com/yannh/kubeconform)
-* the [e2e](./.github/workflows/e2e.yaml) workflow starts a Kubernetes cluster in CI and tests the staging setup by running Flux in Kubernetes Kind
+- AKS Documentation. https://learn.microsoft.com/azure/aks
+- Kubernetes Learning Path. https://azure.microsoft.com/resources/kubernetes-learning-path 
